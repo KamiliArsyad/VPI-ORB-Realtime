@@ -142,9 +142,7 @@ int main(int argc, char *argv[])
     {
         printf("processing frame %d\n", i);
         cv::Mat frame;
-        inputCamera >> frame; // Fetch a new frame from camera. Not sure if this is correct.
-
-        // TODO: process the frame here
+        inputCamera >> frame; // Fetch a new frame from camera.
 
         // Declare VPI objects
         VPIImage vpiFrame = NULL;
@@ -154,8 +152,7 @@ int main(int argc, char *argv[])
         VPIArray descriptors = NULL;
 
         // We now wrap the loaded image into a VPIImage object to be used by VPI.
-        // VPI won't make a copy of it, so the original
-        // image must be in scope at all times.
+        // VPI won't make a copy of it, so the original image must be in scope at all times.
         CHECK_STATUS(vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame));
         CHECK_STATUS(vpiImageCreate(frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale));
 
@@ -196,11 +193,11 @@ int main(int argc, char *argv[])
         VPIImageData imgData;
         CHECK_STATUS(vpiArrayLockData(keypoints, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outKeypointsData));
         CHECK_STATUS(vpiArrayLockData(descriptors, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outDescriptorsData));
-        CHECK_STATUS(vpiImageLockData(vpiFrameGrayScale, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &imgData)); 
+        CHECK_STATUS(vpiImageLockData(vpiFrameGrayScale, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &imgData));
 
         VPIKeypointF32 *outKeypoints = (VPIKeypointF32 *)outKeypointsData.buffer.aos.data;
 
-        cv::Mat tempImg; 
+        cv::Mat tempImg;
         CHECK_STATUS(vpiImageDataExportOpenCVMat(imgData, &tempImg))
         cv::Mat output = DrawKeypoints(tempImg, outKeypoints, *outKeypointsData.buffer.aos.sizePointer);
 
