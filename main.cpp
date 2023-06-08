@@ -22,6 +22,8 @@
 #include <iostream>
 #include <sstream>
 
+#define DEBUG 1
+
 /**
  * This macro wraps a vpi-related statement to make sure that
  * it works or throws an error appropriately otherwise.
@@ -85,7 +87,6 @@ int main(int argc, char *argv[])
 {
     // OpenCV image that will be wrapped by a VPIImage.
     // Define it here so that it's destroyed *after* wrapper is destroyed
-    cv::Mat cvImage;
     VPIPayload orbPayload = NULL;
     VPIStream stream      = NULL;
 
@@ -102,9 +103,13 @@ int main(int argc, char *argv[])
 
     // ========================
     // Process frame by frame
-    cv::VideoCapture inputCamera;
+    # if DEBUG
+    cv::VideoCapture inputCamera("../assets/input.mp4");
+    # else
+    cv::VideoCapture inputCamera(0);
+    # endif
 
-    if (!inputCamera.open(0))
+    if (!inputCamera.isOpened())
     {
         throw std::runtime_error("Can't open camera\n");
         return -1;
@@ -152,7 +157,7 @@ int main(int argc, char *argv[])
         // VPI won't make a copy of it, so the original
         // image must be in scope at all times.
         CHECK_STATUS(vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame));
-        CHECK_STATUS(vpiImageCreate(cvImage.cols, cvImage.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale));
+        CHECK_STATUS(vpiImageCreate(frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale));
 
         // Create the output keypoint array.
         CHECK_STATUS(
@@ -162,6 +167,7 @@ int main(int argc, char *argv[])
         CHECK_STATUS(vpiArrayCreate(orbParams.maxFeatures, VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR, backend | VPI_BACKEND_CPU,
                                     &descriptors));
 
+        printf("Writing frame %d\n", i);
         writer << frame;
     }
 
