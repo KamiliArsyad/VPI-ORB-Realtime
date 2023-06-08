@@ -1,4 +1,5 @@
 #include <opencv2/core/version.hpp>
+#include <opencv2/features2d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/videoio.hpp>
@@ -10,7 +11,14 @@
 #include <vpi/Pyramid.h>
 #include <vpi/Status.h>
 #include <vpi/Stream.h>
+#include <vpi/algo/ConvertImageFormat.h>
+#include <vpi/algo/GaussianPyramid.h>
+#include <vpi/algo/ImageFlip.h>
+#include <vpi/algo/ORB.h>
 
+#include <bitset>
+#include <cstdio>
+#include <cstring> // for memset
 #include <iostream>
 #include <sstream>
 
@@ -69,7 +77,101 @@ static cv::Mat DrawKeypoints(cv::Mat img, VPIKeypointF32 *kpts, int numKeypoints
     return output;
 }
 
+/**
+ * First argument: backend (<cpu|cuda>)
+ * Second argument: how many frames are going to be recorded
+ */
 int main(int argc, char *argv[])
 {
-    return 0;
+    // OpenCV image that will be wrapped by a VPIImage.
+    // Define it here so that it's destroyed *after* wrapper is destroyed
+    cv::Mat cvImage;
+    VPIPayload orbPayload = NULL;
+    VPIStream stream      = NULL;
+
+    int returnValue = 0;
+
+    // Parse parameters
+    if (argc != 3)
+    {
+        throw std::runtime_error(std::string("Usage: ") + argv[0] + " <cpu|cuda> <number of frames>");
+    }
+
+    int numOfFrames = std::stoi(argv[2]);
+    VPIBackend backend = argv[1] == "cuda" ? VPI_BACKEND_CUDA : VPI_BACKEND_CPU;
+
+    // ========================
+    // Process frame by frame
+    cv::VideoCapture inputCamera;
+
+    if (!inputCamera.open(0))
+    {
+        throw std::runtime_error("Can't open camera\n");
+        return -1;
+    }
+
+    int32_t width  = inputCamera.get(cv::CAP_PROP_FRAME_WIDTH);
+    int32_t height = inputCamera.get(cv::CAP_PROP_FRAME_HEIGHT);
+    double fps = inputCamera.get(cv::CAP_PROP_FPS);
+
+    // Prepare video output
+    cv::VideoWriter writer;
+    writer.open("out.mp4", cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps, cv::Size(width, height));
+    if (!writer.isOpened())
+    {
+        throw std::runtime_error("cannot open video");
+        return -1;
+    }
+
+    //      ---------------------
+    VPIORBParams orbParams;
+    // Create the stream that will be processed in the provided backend
+    CHECK_STATUS(vpiStreamCreate(backend, &stream));
+    CHECK_STATUS(vpiInitORBParams(&orbParams));
+    orbParams.maxFeatures = 3000;
+    //      ---------------------
+
+
+    // Process each frame
+    for (int i = 0; i < numOfFrames; ++i)
+    {
+        printf("processing frame %d\n", i);
+        cv::Mat frame;
+        inputCamera >> frame; // Fetch a new frame from camera. Not sure if this is correct.
+
+        // TODO: process the frame here
+
+        // Declare VPI objects
+        VPIImage vpiFrame;
+        VPIImage vpiFrameGrayScale;
+        VPIPyramid pyrInput   = NULL;
+        VPIArray keypoints    = NULL;
+        VPIArray descriptors  = NULL;
+
+        // We now wrap the loaded image into a VPIImage object to be used by VPI.
+        // VPI won't make a copy of it, so the original
+        // image must be in scope at all times.
+        CHECK_STATUS(vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame));
+        CHECK_STATUS(vpiImageCreate(cvImage.cols, cvImage.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale));
+
+        // Create the output keypoint array.
+        CHECK_STATUS(
+            vpiArrayCreate(orbParams.maxFeatures, VPI_ARRAY_TYPE_KEYPOINT_F32, backend | VPI_BACKEND_CPU, &keypoints));
+
+        // Create the output descriptors array.
+        CHECK_STATUS(vpiArrayCreate(orbParams.maxFeatures, VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR, backend | VPI_BACKEND_CPU,
+                                    &descriptors));
+
+        writer << frame;
+    }
+
+    // Cleanup
+    inputCamera.release();
+    writer.release();
+    vpiStreamDestroy(stream);
+
+    return returnValue;
 }
+
+
+
