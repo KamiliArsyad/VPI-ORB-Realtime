@@ -21,6 +21,7 @@
 #include <cstring> // for memset
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <exception>
 #define DEBUG 1
 
@@ -128,13 +129,15 @@ static std::string EncodeKeypoints(VPIArray keypointsArray, VPIArray descriptors
     // Encode the keypoints and descriptors
     for (int i = 0; i < numKeypoints; ++i)
     {
-        // Encode the descriptor
-        std::bitset<256> descriptor;
-        for (int j = 0; j < 256; ++j)
+        // Encode the descriptor to 32 characters
+        std::bitset<256> descriptor(((uint16_t *)descriptorsData.buffer.aos.data)[i]);
+        for (int j = 0; j < 32; ++j)
         {
-            descriptor[j] = ((uint8_t *)descriptorsData.buffer.aos.data)[i * 32 + j];
+            unsigned long byte = descriptor.to_ulong() >> j & 0xFF;
+            char c = static_cast<char>(byte);
+            ss << c;
         }
-        ss << descriptor.to_string() << ";";
+        ss << ";";
 
         // Encode the keypoint
         ss << keypoints[i].x << "," << keypoints[i].y << ";";
@@ -200,7 +203,7 @@ int main(int argc, char *argv[])
         vpiCall(vpiStreamCreate, backend, &stream);
         vpiCall(vpiInitORBParams, &orbParams);
         orbParams.fastParams.intensityThreshold = 30;
-        orbParams.maxFeatures = 1000;
+        orbParams.maxFeatures = 5;
         //      ---------------------
 
         // Initialize a timer
@@ -295,7 +298,7 @@ int main(int argc, char *argv[])
 
             // Print the encoded string
             std::string encoded = EncodeKeypoints(keypoints, descriptors, numKeypoints);
-            std::cout << encoded << std::endl;
+            std::cout << i << ";" << encoded;
             */
             // Unlock
             vpiCall(vpiArrayUnlock, keypoints);
