@@ -21,7 +21,8 @@
 #include <cstring> // for memset
 #include <iostream>
 #include <sstream>
-
+#include <fstream>
+#include <exception>
 #define DEBUG 1
 
 /**
@@ -43,6 +44,33 @@
             throw std::runtime_error(ss.str());               \
         }                                                     \
     } while (0);
+
+// Custom exception class for VPI errors
+class VPIException : public std::exception
+{
+public:
+    VPIException(VPIStatus status)
+        : msg("VPI error: " + std::string(vpiStatusGetName(status))) {}
+
+    const char *what() const noexcept override
+    {
+        return msg.c_str();
+    }
+
+private:
+    std::string msg;
+};
+
+// Wrapper function for VPI calls
+template <typename Func, typename... Args>
+void vpiCall(Func func, Args... args)
+{
+    VPIStatus status = func(args...);
+    if (status != VPI_SUCCESS)
+    {
+        throw VPIException(status);
+    }
+}
 
 /**
  * Function to draw the keypoints later after we've identified the features (FAST)
@@ -77,6 +105,46 @@ static cv::Mat DrawKeypoints(cv::Mat img, VPIKeypointF32 *kpts, int numKeypoints
     }
 
     return output;
+}
+
+/**
+ * Function to encode the keypoints and their respective descriptors of a frame
+ * into a single string. The format is as follows:
+ * <numKeypoints>;<desc1>;<x1>,<y1>;<desc2>;<x2>,<y2>;...
+ * The descriptors are encoded as 32 characters ASCII strings for efficiency.
+ */
+static std::string EncodeKeypoints(VPIArray keypointsArray, VPIArray descriptorsArray, int numKeypoints)
+{
+    std::ostringstream ss;
+    ss << numKeypoints << ";";
+
+    // Lock the arrays to access their data
+    VPIArrayData keypointsData, descriptorsData;
+    vpiArrayLockData(keypointsArray, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &keypointsData);
+    vpiArrayLockData(descriptorsArray, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &descriptorsData);
+    vpiArrayUnlock(keypointsArray);
+    vpiArrayUnlock(descriptorsArray);
+
+    VPIKeypointF32 *keypoints = (VPIKeypointF32 *)keypointsData.buffer.aos.data;
+
+    // Encode the keypoints and descriptors
+    for (int i = 0; i < numKeypoints; ++i)
+    {
+        // Encode the descriptor to 32 characters
+        std::bitset<256> descriptor(((uint16_t *)descriptorsData.buffer.aos.data)[i]);
+        for (int j = 0; j < 32; ++j)
+        {
+            unsigned long byte = descriptor.to_ulong() >> j & 0xFF;
+            char c = static_cast<char>(byte);
+            ss << c;
+        }
+        ss << ";";
+
+        // Encode the keypoint
+        ss << keypoints[i].x << "," << keypoints[i].y << ";";
+    }
+
+    return ss.str();
 }
 
 /**
@@ -128,91 +196,130 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    //      ---------------------
-    VPIORBParams orbParams;
-    // Create the stream that will be processed in the provided backend
-    CHECK_STATUS(vpiStreamCreate(backend, &stream));
-    CHECK_STATUS(vpiInitORBParams(&orbParams));
-    orbParams.fastParams.intensityThreshold = 10;
-    orbParams.maxFeatures = 500;
-    //      ---------------------
-
-    // Process each frame
-    for (int i = 0; i < numOfFrames; ++i)
+    try
     {
-        printf("processing frame %d\n", i);
-        cv::Mat frame;
-        inputCamera >> frame; // Fetch a new frame from camera.
+        //      ---------------------
+        VPIORBParams orbParams;
+        // Create the stream that will be processed in the provided backend
+        vpiCall(vpiStreamCreate, backend, &stream);
+        vpiCall(vpiInitORBParams, &orbParams);
+        orbParams.fastParams.intensityThreshold = 30;
+        orbParams.maxFeatures = 5;
+        //      ---------------------
+
+        // Initialize a timer
+        cv::TickMeter timer;
+        timer.start();
 
         // Declare VPI objects
+        VPIPyramid pyrInput = NULL;
         VPIImage vpiFrame = NULL;
         VPIImage vpiFrameGrayScale = NULL;
-        VPIPyramid pyrInput = NULL;
         VPIArray keypoints = NULL;
         VPIArray descriptors = NULL;
 
-        // We now wrap the loaded image into a VPIImage object to be used by VPI.
-        // VPI won't make a copy of it, so the original image must be in scope at all times.
-        CHECK_STATUS(vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame));
-        CHECK_STATUS(vpiImageCreate(frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale));
+        cv::Mat frame;
+        inputCamera >> frame; // Fetch a new frame from camera.
+        vpiCall(vpiImageCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale);
 
         // Create the output keypoint array.
-        CHECK_STATUS(
-            vpiArrayCreate(orbParams.maxFeatures, VPI_ARRAY_TYPE_KEYPOINT_F32, backend | VPI_BACKEND_CPU, &keypoints));
+        vpiCall(vpiArrayCreate,
+                orbParams.maxFeatures,
+                VPI_ARRAY_TYPE_KEYPOINT_F32,
+                backend | VPI_BACKEND_CPU,
+                &keypoints);
 
         // Create the output descriptors array.
-        CHECK_STATUS(vpiArrayCreate(orbParams.maxFeatures, VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR, backend | VPI_BACKEND_CPU,
-                                    &descriptors));
+        vpiCall(vpiArrayCreate,
+                orbParams.maxFeatures,
+                VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR,
+                backend | VPI_BACKEND_CPU,
+                &descriptors);
 
         // Create the payload for ORB Feature Detector algorithm
-        CHECK_STATUS(vpiCreateORBFeatureDetector(backend, 10000, &orbPayload));
-
-        // ---------------------
-        // Process the frame
-        // ---------------------
-
-        // Convert to grayscale
-        CHECK_STATUS(vpiSubmitConvertImageFormat(stream, backend, vpiFrame, vpiFrameGrayScale, NULL));
+        vpiCall(vpiCreateORBFeatureDetector, backend, 10000, &orbPayload);
 
         // Create the pyramid
-        CHECK_STATUS(vpiPyramidCreate(frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, orbParams.pyramidLevels, 0.5,
-                                      backend, &pyrInput));
-        CHECK_STATUS(vpiSubmitGaussianPyramidGenerator(stream, backend,
-                                                       vpiFrameGrayScale, pyrInput, VPI_BORDER_CLAMP));
+        vpiCall(vpiPyramidCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, orbParams.pyramidLevels, 0.5,
+                backend, &pyrInput);
 
-        // Detect ORB features
-        CHECK_STATUS(vpiSubmitORBFeatureDetector(stream, backend, orbPayload,
-                                                 pyrInput, keypoints, descriptors, &orbParams, VPI_BORDER_CLAMP));
-        CHECK_STATUS(vpiStreamSync(stream));
+        // Process each frame
+        for (int i = 0; i < numOfFrames; ++i)
+        {
+            printf("processing frame %d\n", i);
+            inputCamera >> frame; // Fetch a new frame from camera.
 
-        // ---------------------
-        // Draw the keypoints and save the frame
-        // ---------------------
-        VPIArrayData outKeypointsData;
-        VPIArrayData outDescriptorsData;
-        VPIImageData imgData;
-        CHECK_STATUS(vpiArrayLockData(keypoints, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outKeypointsData));
-        CHECK_STATUS(vpiArrayLockData(descriptors, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outDescriptorsData));
-        CHECK_STATUS(vpiImageLockData(vpiFrameGrayScale, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &imgData));
+            // We now wrap the loaded image into a VPIImage object to be used by VPI.
+            // VPI won't make a copy of it, so the original image must be in scope at all times.
+            if (i == 0)
+            {
+                vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame);
+            }
+            else
+            {
+                vpiImageSetWrappedOpenCVMat(vpiFrame, frame);
+            }
 
-        VPIKeypointF32 *outKeypoints = (VPIKeypointF32 *)outKeypointsData.buffer.aos.data;
+            // ---------------------
+            // Process the frame
+            // ---------------------
 
-        cv::Mat tempImg;
-        CHECK_STATUS(vpiImageDataExportOpenCVMat(imgData, &tempImg))
-        cv::Mat output = DrawKeypoints(tempImg, outKeypoints, *outKeypointsData.buffer.aos.sizePointer);
+            // Convert to grayscale
+            vpiCall(vpiSubmitConvertImageFormat, stream, backend, vpiFrame, vpiFrameGrayScale, nullptr);
 
-        // Save the frame
-        writer << output;
+            // Submit the pyramid generator
+            vpiCall(vpiSubmitGaussianPyramidGenerator, stream, backend,
+                    vpiFrameGrayScale, pyrInput, VPI_BORDER_CLAMP);
 
-        // Cleanup
-        CHECK_STATUS(vpiArrayUnlock(keypoints));
-        CHECK_STATUS(vpiImageUnlock(vpiFrameGrayScale));
+            // Detect ORB features
+            vpiCall(vpiSubmitORBFeatureDetector, stream, backend, orbPayload,
+                    pyrInput, keypoints, descriptors, &orbParams, VPI_BORDER_CLAMP);
+            vpiCall(vpiStreamSync, stream);
 
+            // ---------------------
+            // Draw the keypoints and save the frame
+            // ---------------------
+            VPIArrayData outKeypointsData;
+            VPIImageData imgData;
+            vpiCall(vpiArrayLockData, keypoints, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outKeypointsData);
+            vpiCall(vpiImageLockData, vpiFrameGrayScale, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &imgData);
+
+            VPIKeypointF32 *outKeypoints = (VPIKeypointF32 *)outKeypointsData.buffer.aos.data;
+
+            cv::Mat tempImg;
+            vpiCall(vpiImageDataExportOpenCVMat, imgData, &tempImg);
+            cv::Mat output = DrawKeypoints(tempImg, outKeypoints, *outKeypointsData.buffer.aos.sizePointer);
+
+            // Save the frame
+            writer << output;
+
+            /*
+            int32_t numKeypoints;
+            vpiCall(vpiArrayGetSize, keypoints, &numKeypoints);
+
+            // Print the encoded string
+            std::string encoded = EncodeKeypoints(keypoints, descriptors, numKeypoints);
+            std::cout << i << ";" << encoded;
+            */
+            // Unlock
+            vpiCall(vpiArrayUnlock, keypoints);
+            vpiCall(vpiImageUnlock, vpiFrameGrayScale);
+        }
+
+        vpiArrayDestroy(keypoints);
+        vpiArrayDestroy(descriptors);
         vpiImageDestroy(vpiFrame);
         vpiImageDestroy(vpiFrameGrayScale);
         vpiPyramidDestroy(pyrInput);
-        vpiArrayDestroy(keypoints);
-        vpiArrayDestroy(descriptors);
+
+        // Stop the timer
+        timer.stop();
+        printf("Processing time per frame: %f ms\n", timer.getTimeMilli() / numOfFrames);
+    }
+    catch (const VPIException &e)
+    {
+        std::cerr << e.what() << '\n';
+        returnValue = -1;
     }
 
     // Cleanup
