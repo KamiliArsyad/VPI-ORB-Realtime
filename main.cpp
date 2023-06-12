@@ -25,26 +25,6 @@
 #include <exception>
 #define DEBUG 1
 
-/**
- * This macro wraps a vpi-related statement to make sure that
- * it works or throws an error appropriately otherwise.
- * It is advisable to always use this on any small-scale
- * projects such as this one.
- */
-#define CHECK_STATUS(STMT)                                    \
-    do                                                        \
-    {                                                         \
-        VPIStatus status = (STMT);                            \
-        if (status != VPI_SUCCESS)                            \
-        {                                                     \
-            char buffer[VPI_MAX_STATUS_MESSAGE_LENGTH];       \
-            vpiGetLastStatusMessage(buffer, sizeof(buffer));  \
-            std::ostringstream ss;                            \
-            ss << vpiStatusGetName(status) << ": " << buffer; \
-            throw std::runtime_error(ss.str());               \
-        }                                                     \
-    } while (0);
-
 // Custom exception class for VPI errors
 class VPIException : public std::exception
 {
