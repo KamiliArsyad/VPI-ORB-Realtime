@@ -80,6 +80,44 @@ static cv::Mat DrawKeypoints(cv::Mat img, VPIKeypointF32 *kpts, int numKeypoints
 }
 
 /**
+ * Function to encode all the brief descriptors into a single hex string 
+ */
+static std::string EncodeDescriptors(VPIArray descriptors, int numKeypoints)
+{
+    std::string encoded;
+    encoded.reserve(numKeypoints * 32);
+
+    for (int i = 0; i < numKeypoints; ++i)
+    {
+        VPIKeypointF32 *kpt = (VPIKeypointF32 *)vpiArrayGetData(descriptors) + i;
+        std::bitset<32> bits(kpt->score);
+        encoded += bits.to_string();
+    }
+
+    return encoded;
+}
+
+/**
+ * Function to encode all the keypoints into a single binary string
+ */
+static std::string EncodeKeypoints(VPIArray keypoints, int numKeypoints)
+{
+    std::string encoded;
+    encoded.reserve(numKeypoints * 8);
+
+    for (int i = 0; i < numKeypoints; ++i)
+    {
+        VPIKeypointF32 *kpt = (VPIKeypointF32 *)vpiArrayGetData(keypoints) + i;
+        std::bitset<32> bitsX(kpt->x);
+        std::bitset<32> bitsY(kpt->y);
+        encoded += bitsX.to_string();
+        encoded += bitsY.to_string();
+    }
+
+    return encoded;
+}
+
+/**
  * First argument: backend (<cpu|cuda>)
  * Second argument: how many frames are going to be recorded
  */
@@ -184,6 +222,11 @@ int main(int argc, char *argv[])
         CHECK_STATUS(vpiSubmitORBFeatureDetector(stream, backend, orbPayload,
                                                  pyrInput, keypoints, descriptors, &orbParams, VPI_BORDER_CLAMP));
         CHECK_STATUS(vpiStreamSync(stream));
+
+        // Print out the number of keypoints detected
+        int32_t numKeypoints;
+        CHECK_STATUS(vpiArrayGetSize(keypoints, &numKeypoints));
+        printf("Number of keypoints detected: %d\n", numKeypoints);
 
         // ---------------------
         // Draw the keypoints and save the frame
