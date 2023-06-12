@@ -171,23 +171,42 @@ int main(int argc, char *argv[])
         timer.start();
 
         // Declare VPI objects
+        VPIPyramid pyrInput = NULL;
         VPIImage vpiFrame = NULL;
         VPIImage vpiFrameGrayScale = NULL;
+        VPIArray keypoints = NULL;
+        VPIArray descriptors = NULL;
 
         cv::Mat frame;
         inputCamera >> frame; // Fetch a new frame from camera.
         vpiCall(vpiImageCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale);
+
+        // Create the output keypoint array.
+        vpiCall(vpiArrayCreate,
+                orbParams.maxFeatures,
+                VPI_ARRAY_TYPE_KEYPOINT_F32,
+                backend | VPI_BACKEND_CPU,
+                &keypoints);
+
+        // Create the output descriptors array.
+        vpiCall(vpiArrayCreate,
+                orbParams.maxFeatures,
+                VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR,
+                backend | VPI_BACKEND_CPU,
+                &descriptors);
+
+        // Create the payload for ORB Feature Detector algorithm
+        vpiCall(vpiCreateORBFeatureDetector, backend, 10000, &orbPayload);
+
+        // Create the pyramid
+        vpiCall(vpiPyramidCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, orbParams.pyramidLevels, 0.5,
+                backend, &pyrInput);
 
         // Process each frame
         for (int i = 0; i < numOfFrames; ++i)
         {
             printf("processing frame %d\n", i);
             inputCamera >> frame; // Fetch a new frame from camera.
-
-            // Declare VPI objects
-            VPIPyramid pyrInput = NULL;
-            VPIArray keypoints = NULL;
-            VPIArray descriptors = NULL;
 
             // We now wrap the loaded image into a VPIImage object to be used by VPI.
             // VPI won't make a copy of it, so the original image must be in scope at all times.
@@ -200,23 +219,6 @@ int main(int argc, char *argv[])
                 vpiImageSetWrappedOpenCVMat(vpiFrame, frame);
             }
 
-            // Create the output keypoint array.
-            vpiCall(vpiArrayCreate,
-                    orbParams.maxFeatures,
-                    VPI_ARRAY_TYPE_KEYPOINT_F32,
-                    backend | VPI_BACKEND_CPU,
-                    &keypoints);
-
-            // Create the output descriptors array.
-            vpiCall(vpiArrayCreate,
-                    orbParams.maxFeatures,
-                    VPI_ARRAY_TYPE_BRIEF_DESCRIPTOR,
-                    backend | VPI_BACKEND_CPU,
-                    &descriptors);
-
-            // Create the payload for ORB Feature Detector algorithm
-            vpiCall(vpiCreateORBFeatureDetector, backend, 10000, &orbPayload);
-
             // ---------------------
             // Process the frame
             // ---------------------
@@ -224,9 +226,7 @@ int main(int argc, char *argv[])
             // Convert to grayscale
             vpiCall(vpiSubmitConvertImageFormat, stream, backend, vpiFrame, vpiFrameGrayScale, nullptr);
 
-            // Create the pyramid
-            vpiCall(vpiPyramidCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, orbParams.pyramidLevels, 0.5,
-                    backend, &pyrInput);
+            // Submit the pyramid generator
             vpiCall(vpiSubmitGaussianPyramidGenerator, stream, backend,
                     vpiFrameGrayScale, pyrInput, VPI_BORDER_CLAMP);
 
@@ -252,17 +252,16 @@ int main(int argc, char *argv[])
             // Save the frame
             writer << output;
 
-            // Cleanup
+            // Unlock
             vpiCall(vpiArrayUnlock, keypoints);
             vpiCall(vpiImageUnlock, vpiFrameGrayScale);
-
-            vpiPyramidDestroy(pyrInput);
-            vpiArrayDestroy(keypoints);
-            vpiArrayDestroy(descriptors);
         }
 
+        vpiArrayDestroy(keypoints);
+        vpiArrayDestroy(descriptors);
         vpiImageDestroy(vpiFrame);
         vpiImageDestroy(vpiFrameGrayScale);
+        vpiPyramidDestroy(pyrInput);
 
         // Stop the timer
         timer.stop();
