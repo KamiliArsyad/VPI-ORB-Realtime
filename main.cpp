@@ -107,6 +107,43 @@ static cv::Mat DrawKeypoints(cv::Mat img, VPIKeypointF32 *kpts, int numKeypoints
 }
 
 /**
+ * Function to encode the keypoints and their respective descriptors of a frame
+ * into a single string. The format is as follows:
+ * <numKeypoints>;<desc1>;<x1>,<y1>;<desc2>;<x2>,<y2>;...
+ */
+static std::string EncodeKeypoints(VPIArray keypointsArray, VPIArray descriptorsArray, int numKeypoints)
+{
+    std::ostringstream ss;
+    ss << numKeypoints << ";";
+
+    // Lock the arrays to access their data
+    VPIArrayData keypointsData, descriptorsData;
+    vpiArrayLockData(keypointsArray, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &keypointsData);
+    vpiArrayLockData(descriptorsArray, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &descriptorsData);
+    vpiArrayUnlock(keypointsArray);
+    vpiArrayUnlock(descriptorsArray);
+
+    VPIKeypointF32 *keypoints = (VPIKeypointF32 *)keypointsData.buffer.aos.data;
+
+    // Encode the keypoints and descriptors
+    for (int i = 0; i < numKeypoints; ++i)
+    {
+        // Encode the descriptor
+        std::bitset<256> descriptor;
+        for (int j = 0; j < 256; ++j)
+        {
+            descriptor[j] = ((uint8_t *)descriptorsData.buffer.aos.data)[i * 32 + j];
+        }
+        ss << descriptor.to_string() << ";";
+
+        // Encode the keypoint
+        ss << keypoints[i].x << "," << keypoints[i].y << ";";
+    }
+
+    return ss.str();
+}
+
+/**
  * First argument: backend (<cpu|cuda>)
  * Second argument: how many frames are going to be recorded
  */
@@ -162,8 +199,8 @@ int main(int argc, char *argv[])
         // Create the stream that will be processed in the provided backend
         vpiCall(vpiStreamCreate, backend, &stream);
         vpiCall(vpiInitORBParams, &orbParams);
-        orbParams.fastParams.intensityThreshold = 10;
-        orbParams.maxFeatures = 500;
+        orbParams.fastParams.intensityThreshold = 30;
+        orbParams.maxFeatures = 1000;
         //      ---------------------
 
         // Initialize a timer
@@ -252,6 +289,14 @@ int main(int argc, char *argv[])
             // Save the frame
             writer << output;
 
+            /*
+            int32_t numKeypoints;
+            vpiCall(vpiArrayGetSize, keypoints, &numKeypoints);
+
+            // Print the encoded string
+            std::string encoded = EncodeKeypoints(keypoints, descriptors, numKeypoints);
+            std::cout << encoded << std::endl;
+            */
             // Unlock
             vpiCall(vpiArrayUnlock, keypoints);
             vpiCall(vpiImageUnlock, vpiFrameGrayScale);
