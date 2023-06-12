@@ -166,24 +166,39 @@ int main(int argc, char *argv[])
         orbParams.maxFeatures = 500;
         //      ---------------------
 
+        // Initialize a timer
+        cv::TickMeter timer;
+        timer.start();
+
+        // Declare VPI objects
+        VPIImage vpiFrame = NULL;
+        VPIImage vpiFrameGrayScale = NULL;
+
+        cv::Mat frame;
+        inputCamera >> frame; // Fetch a new frame from camera.
+        vpiCall(vpiImageCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale);
+
         // Process each frame
         for (int i = 0; i < numOfFrames; ++i)
         {
             printf("processing frame %d\n", i);
-            cv::Mat frame;
             inputCamera >> frame; // Fetch a new frame from camera.
 
             // Declare VPI objects
-            VPIImage vpiFrame = NULL;
-            VPIImage vpiFrameGrayScale = NULL;
             VPIPyramid pyrInput = NULL;
             VPIArray keypoints = NULL;
             VPIArray descriptors = NULL;
 
             // We now wrap the loaded image into a VPIImage object to be used by VPI.
             // VPI won't make a copy of it, so the original image must be in scope at all times.
-            vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame);
-            vpiCall(vpiImageCreate, frame.cols, frame.rows, VPI_IMAGE_FORMAT_U8, 0, &vpiFrameGrayScale);
+            if (i == 0)
+            {
+                vpiImageCreateWrapperOpenCVMat(frame, 0, &vpiFrame);
+            }
+            else
+            {
+                vpiImageSetWrappedOpenCVMat(vpiFrame, frame);
+            }
 
             // Create the output keypoint array.
             vpiCall(vpiArrayCreate,
@@ -220,19 +235,12 @@ int main(int argc, char *argv[])
                     pyrInput, keypoints, descriptors, &orbParams, VPI_BORDER_CLAMP);
             vpiCall(vpiStreamSync, stream);
 
-            // Print out the number of keypoints detected
-            int32_t numKeypoints;
-            vpiCall(vpiArrayGetSize, keypoints, &numKeypoints);
-            printf("Number of keypoints detected: %d\n", numKeypoints);
-
             // ---------------------
             // Draw the keypoints and save the frame
             // ---------------------
             VPIArrayData outKeypointsData;
-            VPIArrayData outDescriptorsData;
             VPIImageData imgData;
             vpiCall(vpiArrayLockData, keypoints, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outKeypointsData);
-            vpiCall(vpiArrayLockData, descriptors, VPI_LOCK_READ, VPI_ARRAY_BUFFER_HOST_AOS, &outDescriptorsData);
             vpiCall(vpiImageLockData, vpiFrameGrayScale, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &imgData);
 
             VPIKeypointF32 *outKeypoints = (VPIKeypointF32 *)outKeypointsData.buffer.aos.data;
@@ -248,12 +256,17 @@ int main(int argc, char *argv[])
             vpiCall(vpiArrayUnlock, keypoints);
             vpiCall(vpiImageUnlock, vpiFrameGrayScale);
 
-            vpiImageDestroy(vpiFrame);
-            vpiImageDestroy(vpiFrameGrayScale);
             vpiPyramidDestroy(pyrInput);
             vpiArrayDestroy(keypoints);
             vpiArrayDestroy(descriptors);
         }
+
+        vpiImageDestroy(vpiFrame);
+        vpiImageDestroy(vpiFrameGrayScale);
+
+        // Stop the timer
+        timer.stop();
+        printf("Processing time per frame: %f ms\n", timer.getTimeMilli() / numOfFrames);
     }
     catch (const VPIException &e)
     {
